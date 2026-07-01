@@ -1,24 +1,30 @@
 import os
 import json
 import requests
-import pandas as pd
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+# ==========================================
+# 0. 보안: .env 파일에서 환경 변수 불러오기
+# ==========================================
 load_dotenv()
 
+# ==========================================
+# 1. 환경 설정 및 API 엔드포인트 세팅
+# ==========================================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BACKEND_GET_DIARIES_URL = os.getenv("BACKEND_GET_URL")
 BACKEND_POST_COMMENTS_URL = os.getenv("BACKEND_POST_URL")
 
+# API 키 누락 방어막
 if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY가 없습니다. .env 파일을 확인해 주세요.")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ==========================================
-# 연령대별 특성 가이드 사전
+# 2. 연령대별 특성 가이드 사전 (Prompt 주입용)
 # ==========================================
 AGE_TRAITS = {
     "고등학생": "학업 스트레스, 진로에 대한 고민, 친구 관계, 풋풋한 일상",
@@ -28,16 +34,29 @@ AGE_TRAITS = {
     "30대 중반~": "삶의 안정과 번아웃, 가족/육아, 건강, 인생의 방향성 재점검"
 }
 
+# ==========================================
+# 3. 연령대 분류 함수 (Rule-based)
+# ==========================================
 def categorize_age(age):
-    if age <= 19: return "고등학생"
-    elif 20 <= age <= 23: return "20대 초반"
-    elif 24 <= age <= 26: return "20대 중반"
-    elif 27 <= age <= 33: return "20대 후반~30대 초반"
-    else: return "30대 중반~"
+    """나이를 입력받아 5가지 그룹으로 분류합니다."""
+    if age <= 19:
+        return "고등학생"
+    elif 20 <= age <= 23:
+        return "20대 초반"
+    elif 24 <= age <= 26:
+        return "20대 중반"
+    elif 27 <= age <= 33:
+        return "20대 후반~30대 초반"
+    else:
+        return "30대 중반~"
 
+# ==========================================
+# 4. 메인 파이프라인 실행 함수
+# ==========================================
 def run_daily_ai_analysis():
     print("🚀 일일 AI 맞춤형 분석 및 멘트 매핑 작업을 시작합니다...")
     
+    # [STEP 1] 백엔드에서 오늘 쌓인 일기 데이터 받아오기
     try:
         response = requests.get(BACKEND_GET_DIARIES_URL)
         response.raise_for_status()
@@ -47,29 +66,60 @@ def run_daily_ai_analysis():
         return
 
     if not diaries_data:
+        print("📭 오늘 분석할 일기 데이터가 없습니다.")
         return
 
-    df = pd.DataFrame(diaries_data)
-    if 'is_public' in df.columns:
-        df = df[df['is_public'] == True]
+    # [STEP 2] 딕셔너리 반복문으로 안전하게 전처리 및 그룹화 (KeyError 방어)
+    grouped_data = {} 
+    
+    for diary in diaries_data:
+        # 1. 비공개 일기 제외 (2중 안전장치)
+        if diary.get('is_public') == False:
+            continue
+            
+        # 2. 나이 정보 안전하게 가져오기 (diary['age'] 에러 대비)
+        age = diary.get('age')
         
-    df['age_group'] = df['age'].apply(categorize_age)
-    
+        # 나이 데이터가 누락되었을 경우 서버가 다운되는 것을 막고 패스하기
+        if age is None:
+            diary_id = diary.get('id', '알수없음')
+            print(f"⚠️ 경고: 일기 ID {diary_id}에 'age' 데이터가 없어 분석에서 제외합니다.")
+            continue 
+            
+        # 나이를 바탕으로 연령 그룹 이름 찾기
+        age_group = categorize_age(age)
+        
+        # 3. 연령대별 그룹에 담기
+        if age_group not in grouped_data:
+            grouped_data[age_group] = []
+            
+        grouped_data[age_group].append(diary)
+
+    # 최종적으로 백엔드에 한 번에 보낼 리스트 준비
     final_payload = []
-    grouped = df.groupby('age_group')
-    
-    for age_group, group_df in grouped:
+
+    # [STEP 3] 연령대별로 그룹을 순회하며 AI 분석 진행
+    for age_group, diaries_list in grouped_data.items():
         print(f"🧠 [{age_group}] 감정 분류 및 맞춤형 멘트 생성 중...")
         
-        diaries_for_prompt = group_df[['id', 'content']].to_dict(orient='records')
+        # AI 프롬프트 크기를 줄이기 위해 id와 content만 추려내기
+        diaries_for_prompt = [
+            {"id": d.get("id"), "content": d.get("content")} 
+            for d in diaries_list 
+            if d.get("id") is not None and d.get("content") is not None
+        ]
         
-        # 현재 분석 중인 그룹의 특성을 사전에서 가져오기
+        # 만약 일기가 없다면 패스
+        if not diaries_for_prompt:
+            continue
+            
+        # 현재 연령대에 딱 맞는 특성 키워드 가져오기
         current_group_traits = AGE_TRAITS.get(age_group, "다양한 일상과 고민")
         
-        # [3] 프롬프트
+        # 프롬프트 작성
         prompt = f"""
         당신은 따뜻하고 공감 능력이 뛰어난 다이어리 앱의 AI 멘토입니다.
-        아래는 '{age_group}' 사용자들이 작성한 일기(ID와 내용) 모음입니다.
+        아래는 오늘 '{age_group}' 사용자들이 작성한 일기(ID와 내용) 모음입니다.
 
         [연령대별 특성 가이드: {age_group}]
         - 핵심 키워드: {current_group_traits}
@@ -89,6 +139,7 @@ def run_daily_ai_analysis():
         """
 
         try:
+            # Gemini 2.0 Flash 모델 호출 (JSON 구조화 응답 기능 활용)
             response = client.models.generate_content(
                 model='gemini-2.0-flash',
                 contents=prompt,
@@ -115,17 +166,20 @@ def run_daily_ai_analysis():
                 )
             )
             
+            # AI 결과 해석하기
             ai_result = json.loads(response.text)
-            
             pos_comment = ai_result["positive_comment"]
             neg_comment = ai_result["negative_comment"]
             
+            # [STEP 4] AI가 분류한 일기별 감정에 따라, 멘트를 1:1로 매칭
             for item in ai_result["classifications"]:
                 diary_id = item["id"]
                 sentiment = item["sentiment"]
                 
+                # 감정이 긍정이면 응원 멘트, 부정이면 위로 멘트 매칭
                 matched_comment = pos_comment if sentiment == "positive" else neg_comment
                 
+                # 최종 데이터 딕셔너리 구성
                 final_payload.append({
                     "id": diary_id, 
                     "ai_comment": matched_comment
@@ -135,6 +189,7 @@ def run_daily_ai_analysis():
             print(f"❌ [{age_group}] AI 분석 중 오류 발생: {e}")
             continue
 
+    # [STEP 5] 모든 데이터를 백엔드 서버에 단 한 번의 요청으로 일괄 전송 (Batch)
     if final_payload:
         try:
             post_response = requests.post(
@@ -142,9 +197,9 @@ def run_daily_ai_analysis():
                 json={"recommendations": final_payload}
             )
             post_response.raise_for_status()
-            print(f"✅ {len(final_payload)}개의 일기에 맞춤형 AI 추천 멘트 매핑 완료 및 전송 성공!")
+            print(f"✅ 총 {len(final_payload)}개의 일기에 맞춤형 AI 추천 멘트 매핑 완료 및 백엔드 전송 성공!")
         except Exception as e:
-            print(f"❌ 백엔드 전송 실패: {e}")
+            print(f"❌ 백엔드 전송 최종 실패: {e}")
 
 if __name__ == "__main__":
     run_daily_ai_analysis()
