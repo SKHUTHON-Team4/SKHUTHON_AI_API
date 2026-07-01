@@ -1,11 +1,15 @@
 import os
+import sys
 import json
 import time
 import requests
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from fastapi import FastAPI
+
+# Windows 콘솔의 기본 인코딩(cp949)이 이모지를 처리하지 못해 print()가 UnicodeEncodeError로 죽는 것을 방지
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 
 # ==========================================
 # 0. 보안: .env 파일에서 환경 변수 불러오기
@@ -15,15 +19,15 @@ load_dotenv()
 # ==========================================
 # 1. 환경 설정 및 API 엔드포인트 세팅
 # ==========================================
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GPT_API_KEY = os.getenv("GPT_API_KEY")
 BACKEND_GET_DIARIES_URL = os.getenv("BACKEND_GET_URL")
 BACKEND_POST_COMMENTS_URL = os.getenv("BACKEND_POST_URL")
 
 # API 키 누락 방어막
-if not GEMINI_API_KEY:
-    raise ValueError("❌ GEMINI_API_KEY가 없습니다. .env 파일을 확인해 주세요.")
+if not GPT_API_KEY:
+    raise ValueError("❌ GPT_API_KEY가 없습니다. .env 파일을 확인해 주세요.")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = OpenAI(api_key=GPT_API_KEY)
 
 # ==========================================
 # 2. 연령대별 특성 가이드 사전 (Prompt 주입용)
@@ -106,7 +110,7 @@ def run_daily_ai_analysis():
         print(f"🧠 [{age_group}] 감정 분류 및 맞춤형 멘트 생성 중...")
         
         # ✨ [핵심 수정 1] 에러가 나더라도 무시되지 않도록, 반복문 맨 위에서 무조건 15초 대기!
-        print("⏳ 구글 API 속도 제한 방지를 위해 15초 대기 중...")
+        print("⏳ OpenAI API 속도 제한 방지를 위해 15초 대기 중...")
         time.sleep(15)
         
         # ✨ [핵심 수정 2] 너무 많은 데이터를 한 번에 보내면 에러가 나므로, 각 연령대별 최대 5개까지만 잘라서 보냄
@@ -146,35 +150,42 @@ def run_daily_ai_analysis():
         """
 
         try:
-            # Gemini 2.0 Flash 모델 호출 (미국 서버로 옮겼으므로 2.0 정상 작동)
-            response = client.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema={
-                        "type": "object",
-                        "properties": {
-                            "classifications": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "id": {"type": "integer"},
-                                        "sentiment": {"type": "string", "enum": ["positive", "negative"]}
+            # GPT 모델 호출 (Structured Outputs로 JSON 스키마 강제)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "diary_analysis",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "classifications": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "integer"},
+                                            "sentiment": {"type": "string", "enum": ["positive", "negative"]}
+                                        },
+                                        "required": ["id", "sentiment"],
+                                        "additionalProperties": False
                                     }
-                                }
+                                },
+                                "positive_comment": {"type": "string"},
+                                "negative_comment": {"type": "string"}
                             },
-                            "positive_comment": {"type": "string"},
-                            "negative_comment": {"type": "string"}
-                        },
-                        "required": ["classifications", "positive_comment", "negative_comment"]
+                            "required": ["classifications", "positive_comment", "negative_comment"],
+                            "additionalProperties": False
+                        }
                     }
-                )
+                }
             )
-            
+
             # AI 결과 해석하기
-            ai_result = json.loads(response.text)
+            ai_result = json.loads(response.choices[0].message.content)
             pos_comment = ai_result["positive_comment"]
             neg_comment = ai_result["negative_comment"]
             
@@ -196,17 +207,20 @@ def run_daily_ai_analysis():
             print(f"❌ [{age_group}] AI 분석 중 오류 발생: {e}")
             continue
 
-    # [STEP 5] 모든 데이터를 백엔드 서버에 단 한 번의 요청으로 일괄 전송 (Batch)
-    if final_payload:
+    # [STEP 5] 일기별로 개별 엔드포인트({diaryId} 치환)에 AI 추천 멘트 전송
+    success_count = 0
+    for item in final_payload:
+        diary_id = item["id"]
+        post_url = BACKEND_POST_COMMENTS_URL.replace("{diaryId}", str(diary_id))
         try:
-            post_response = requests.post(
-                BACKEND_POST_COMMENTS_URL, 
-                json={"recommendations": final_payload}
-            )
+            post_response = requests.patch(post_url, json={"aiComment": item["aiComment"]})
             post_response.raise_for_status()
-            print(f"✅ 총 {len(final_payload)}개의 일기에 맞춤형 AI 추천 멘트 매핑 완료 및 백엔드 전송 성공!")
+            success_count += 1
         except Exception as e:
-            print(f"❌ 백엔드 전송 최종 실패: {e}")
+            print(f"❌ 일기 ID {diary_id} 백엔드 전송 실패: {e}")
+
+    if final_payload:
+        print(f"✅ 총 {success_count}/{len(final_payload)}개의 일기에 맞춤형 AI 추천 멘트 매핑 완료 및 백엔드 전송 성공!")
 
 # ==========================================
 # 5. FastAPI 웹 서버 세팅
