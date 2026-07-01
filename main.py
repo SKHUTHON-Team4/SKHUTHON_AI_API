@@ -62,6 +62,7 @@ def run_daily_ai_analysis():
     try:
         response = requests.get(BACKEND_GET_DIARIES_URL)
         response.raise_for_status()
+        # 백엔드 형식에 맞춰 "data" 껍데기를 벗기고 알맹이 배열만 가져옵니다.
         diaries_data = response.json().get("data", [])
     except Exception as e:
         print(f"❌ 데이터 수신 실패: {e}")
@@ -71,18 +72,18 @@ def run_daily_ai_analysis():
         print("📭 오늘 분석할 일기 데이터가 없습니다.")
         return
 
-    # [STEP 2] 딕셔너리 반복문으로 안전하게 전처리 및 그룹화 (KeyError 방어)
+    # [STEP 2] 딕셔너리 반복문으로 안전하게 전처리 및 그룹화
     grouped_data = {} 
     
     for diary in diaries_data:
-        # 1. 비공개 일기 제외 (2중 안전장치)
+        # 1. 비공개 일기 제외 (카멜케이스 isPublic 반영)
         if diary.get('isPublic') == False:
             continue
             
-        # 2. 나이 정보 안전하게 가져오기 (diary['age'] 에러 대비)
+        # 2. 나이 정보 안전하게 가져오기
         age = diary.get('age')
         
-        # 나이 데이터가 누락되었을 경우 서버가 다운되는 것을 막고 패스하기
+        # 나이 데이터가 누락되었을 경우 패스
         if age is None:
             diary_id = diary.get('id', '알수없음')
             print(f"⚠️ 경고: 일기 ID {diary_id}에 'age' 데이터가 없어 분석에서 제외합니다.")
@@ -104,12 +105,16 @@ def run_daily_ai_analysis():
     for age_group, diaries_list in grouped_data.items():
         print(f"🧠 [{age_group}] 감정 분류 및 맞춤형 멘트 생성 중...")
         
-        # AI 프롬프트 크기를 줄이기 위해 id와 content만 추려내기
+        # ✨ [핵심 수정 1] 에러가 나더라도 무시되지 않도록, 반복문 맨 위에서 무조건 15초 대기!
+        print("⏳ 구글 API 속도 제한 방지를 위해 15초 대기 중...")
+        time.sleep(15)
+        
+        # ✨ [핵심 수정 2] 너무 많은 데이터를 한 번에 보내면 에러가 나므로, 각 연령대별 최대 5개까지만 잘라서 보냄
         diaries_for_prompt = [
             {"id": d.get("id"), "content": d.get("content")} 
             for d in diaries_list 
             if d.get("id") is not None and d.get("content") is not None
-        ]
+        ][:5] 
         
         # 만약 일기가 없다면 패스
         if not diaries_for_prompt:
@@ -121,7 +126,7 @@ def run_daily_ai_analysis():
         # 프롬프트 작성
         prompt = f"""
         당신은 따뜻하고 공감 능력이 뛰어난 다이어리 앱의 AI 멘토입니다.
-        아래는 오늘 '{age_group}' 사용자들이 작성한 일기(ID와 내용) 모음입니다.
+        아래는 '{age_group}' 사용자들이 작성한 일기(ID와 내용) 모음입니다.
 
         [연령대별 특성 가이드: {age_group}]
         - 핵심 키워드: {current_group_traits}
@@ -134,16 +139,16 @@ def run_daily_ai_analysis():
         2. 추천 멘트 작성: 위에서 제시한 '{age_group}'의 특성과 일기 내용들의 전반적인 분위기를 자연스럽게 연결하여, 이 그룹 전체를 아우르는 추천 멘트를 작성하세요.
            - positive_comment: 일기에서 느껴지는 활기찬 에너지나 성취감을 더욱 북돋아 주고, 연령대에 맞게 진심으로 응원하고 칭찬하는 멘트.
            - negative_comment: 현재 연령대에서 겪을 수 있는 힘듦과 고민을 다독이고, 따뜻한 위로와 가벼운 휴식을 제안하는 멘트.
-           - 분량 제한: 2~3문장으로 짧고 다정하게 작성할 것. (예시: "취업 준비로 마음이 많이 무거우셨군요. 좋아하는 음악을 들으며 스스로를 꼭 안아주는 시간을 가져보세요.")
+           - 분량 제한: 2~3문장으로 짧고 다정하게 작성할 것.
            - 🚨[주의사항]: 메일로 늦게 발송되는 점을 고려하여 멘트 작성 시 '어제', '오늘', '내일', '금일' 등 특정 시점이나 날짜를 지칭하는 단어는 절대 사용하지 말 것.
 
         반드시 지정된 JSON 형식으로만 응답해 주세요.
         """
 
         try:
-            # Gemini 2.0 Flash 모델 호출 (JSON 구조화 응답 기능 활용)
+            # Gemini 2.0 Flash 모델 호출 (미국 서버로 옮겼으므로 2.0 정상 작동)
             response = client.models.generate_content(
-                model='gemini-1.5-flash',
+                model='gemini-2.0-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -181,7 +186,7 @@ def run_daily_ai_analysis():
                 # 감정이 긍정이면 응원 멘트, 부정이면 위로 멘트 매칭
                 matched_comment = pos_comment if sentiment == "positive" else neg_comment
                 
-                # 최종 데이터 딕셔너리 구성
+                # 최종 데이터 딕셔너리 구성 (카멜케이스 aiComment 반영)
                 final_payload.append({
                     "id": diary_id, 
                     "aiComment": matched_comment
@@ -190,10 +195,6 @@ def run_daily_ai_analysis():
         except Exception as e:
             print(f"❌ [{age_group}] AI 분석 중 오류 발생: {e}")
             continue
-
-        # API 호출이 하나 끝날 때마다 15초씩 대기
-        print("⏳ API 속도 제한 방지를 위해 15초 대기 중...")
-        time.sleep(15)
 
     # [STEP 5] 모든 데이터를 백엔드 서버에 단 한 번의 요청으로 일괄 전송 (Batch)
     if final_payload:
@@ -207,15 +208,17 @@ def run_daily_ai_analysis():
         except Exception as e:
             print(f"❌ 백엔드 전송 최종 실패: {e}")
 
-# FastAPI 웹 서버 세팅
+# ==========================================
+# 5. FastAPI 웹 서버 세팅
+# ==========================================
 app = FastAPI()
 
-# 1. Render가 서버가 살아있는지 확인하기 위한 기본 주소 (Health Check)
+# Render가 서버가 살아있는지 확인하기 위한 기본 주소 (Health Check)
 @app.get("/")
 def health_check():
     return {"message": "AI Server is running perfectly!"}
 
-# 2. 백엔드에서 특정 주소로 요청을 보내면 AI 분석 코드가 실행되도록 연결
+# 백엔드에서 특정 주소로 요청을 보내면 AI 분석 코드가 실행되도록 연결
 @app.get("/run-ai")
 def trigger_ai_analysis():
     run_daily_ai_analysis()
