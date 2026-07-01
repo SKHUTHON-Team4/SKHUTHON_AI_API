@@ -61,7 +61,7 @@ def run_daily_ai_analysis():
     try:
         response = requests.get(BACKEND_GET_DIARIES_URL)
         response.raise_for_status()
-        diaries_data = response.json()
+        diaries_data = response.json().get("data", [])
     except Exception as e:
         print(f"❌ 데이터 수신 실패: {e}")
         return
@@ -75,7 +75,7 @@ def run_daily_ai_analysis():
     
     for diary in diaries_data:
         # 1. 비공개 일기 제외 (2중 안전장치)
-        if diary.get('is_public') == False:
+        if diary.get('isPublic') == False:
             continue
             
         # 2. 나이 정보 안전하게 가져오기 (diary['age'] 에러 대비)
