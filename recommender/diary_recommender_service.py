@@ -5,8 +5,6 @@ from kiwipiepy import Kiwi
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# 기존의 app = FastAPI() 대신 router를 생성합니다.
-# prefix를 설정하면 이 파일의 모든 API 주소 앞에 자동으로 /recommender가 붙습니다.
 router = APIRouter(prefix="/recommender", tags=["Recommender"])
 
 

@@ -20,25 +20,17 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mood-message")
 
-# ─────────────────────────────
-# OpenAI 설정
-# ─────────────────────────────
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-MODEL_NAME = "gpt-4o-mini"  # 빠르고 저렴 → 5초 타임아웃 안에 안정적
+MODEL_NAME = "gpt-4o-mini"
 
 client = OpenAI(
-    api_key=OPENAI_API_KEY or "not-set",  # 키 없어도 서버는 기동 → 호출 시 폴백 처리
-    timeout=4.0,       # 백엔드 타임아웃(5초)보다 짧게
-    max_retries=0,     # 재시도하면 5초 초과하므로 즉시 폴백
+    api_key=OPENAI_API_KEY or "not-set",
+    timeout=4.0,
+    max_retries=0,
 )
 
-# 기존의 app = FastAPI() 대신 router를 생성합니다.
-# prefix를 설정하면 이 파일의 모든 API 주소 앞에 자동으로 /title이 붙습니다.
 router = APIRouter(prefix="/title", tags=["Title"])
 
-# ─────────────────────────────
-# 연령층별 프롬프트 가이드
-# ─────────────────────────────
 AGE_TRAITS = {
     "고등학생": {
         "특성": "학업 스트레스, 또래 관계, 진로 고민, 자아 탐색",
@@ -75,9 +67,6 @@ EMOTION_GUIDE = {
     0: "매우 힘든 하루 → 깊이 공감하고 쉬어도 된다고 위로",
 }
 
-# ─────────────────────────────
-# 폴백 메시지 (AI 장애 시)
-# ─────────────────────────────
 FALLBACK_MESSAGES = {
     100: "빛나는 마음들이 모인 하루였어요, 이 따뜻한 에너지 오래오래 간직하길 바라요 ✨",
     75: "잘 지내고 있는 마음들이 느껴져요, 스스로를 충분히 칭찬해줘도 좋아요 🌿",
@@ -86,9 +75,6 @@ FALLBACK_MESSAGES = {
     0: "많이 힘들었을 마음들에게, 잠시 멈춰 쉬어도 괜찮다고 말해주고 싶어요 🌙",
 }
 
-# ─────────────────────────────
-# 캐시 (ageGroup + representativeEmotion 기준, TTL 1시간)
-# ─────────────────────────────
 CACHE_TTL = 3600
 _cache: dict[str, tuple[float, str]] = {}
 
@@ -105,9 +91,6 @@ def cache_set(key: str, message: str) -> None:
     _cache[key] = (time.time(), message)
 
 
-# ─────────────────────────────
-# Request / Response 모델
-# ─────────────────────────────
 class MoodRequest(BaseModel):
     ageGroup: str = Field(..., examples=["20대 중반"])
     positiveRatio: int = 0
@@ -125,9 +108,6 @@ class MoodResponse(BaseModel):
     message: str
 
 
-# ─────────────────────────────
-# 프롬프트 생성
-# ─────────────────────────────
 def build_prompt(req: MoodRequest) -> str:
     traits = AGE_TRAITS.get(req.ageGroup, AGE_TRAITS["20대 초반"])
     emotion_guide = EMOTION_GUIDE.get(req.representativeEmotion, EMOTION_GUIDE[50])
@@ -157,7 +137,7 @@ def build_prompt(req: MoodRequest) -> str:
 {emotion_guide}
 
 다음 규칙을 반드시 지켜주세요:
-1. 2문장 이내로 짧고 다정하게
+1. 공백 문자 포함 45자 이내로 짧고 다정하게
 2. 이모지 1~2개 포함
 3. '오늘', '어제', '내일', '금일' 등 특정 날짜 언급 금지
 4. 전체 그룹을 아우르는 메시지 (개인이 아닌 연령층 전체에게)
@@ -183,9 +163,6 @@ def get_fallback(emotion: int) -> str:
     return FALLBACK_MESSAGES.get(emotion, FALLBACK_MESSAGES[50])
 
 
-# ─────────────────────────────
-# 엔드포인트
-# ─────────────────────────────
 @router.get("/")
 def health():
     return {"status": "ok", "service": "mood-message-api"}
@@ -195,13 +172,13 @@ def health():
 def generate_mood_message(req: MoodRequest):
     cache_key = f"{req.ageGroup}:{req.representativeEmotion}"
 
-    # 1) 캐시 히트 시 즉시 반환 (백엔드 5초 타임아웃 대비)
+    
     cached = cache_get(cache_key)
     if cached:
         logger.info(f"cache hit: {cache_key}")
         return MoodResponse(message=cached)
 
-    # 2) GPT 호출
+    
     try:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
@@ -215,7 +192,7 @@ def generate_mood_message(req: MoodRequest):
             ],
             temperature=0.9,
             max_tokens=200,
-            response_format={"type": "json_object"},  # JSON 강제
+            response_format={"type": "json_object"},
         )
         message = parse_ai_message(completion.choices[0].message.content)
 
@@ -228,5 +205,5 @@ def generate_mood_message(req: MoodRequest):
     except Exception as e:
         logger.error(f"openai error: {e}")
 
-    # 3) 실패 시 폴백 (AI 서버 자체 폴백 → 백엔드 폴백은 2차 방어)
+    
     return MoodResponse(message=get_fallback(req.representativeEmotion))

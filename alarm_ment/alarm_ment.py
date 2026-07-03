@@ -7,31 +7,22 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from fastapi import APIRouter
 
-# Windows 콘솔의 기본 인코딩(cp949)이 이모지를 처리하지 못해 print()가 UnicodeEncodeError로 죽는 것을 방지
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
-# ==========================================
-# 0. 보안: .env 파일에서 환경 변수 불러오기
-# ==========================================
 load_dotenv()
 
-# ==========================================
-# 1. 환경 설정 및 API 엔드포인트 세팅
-# ==========================================
+
 GPT_API_KEY = os.getenv("GPT_API_KEY")
 BACKEND_GET_DIARIES_URL = os.getenv("BACKEND_GET_URL")
 BACKEND_POST_COMMENTS_URL = os.getenv("BACKEND_POST_URL")
 
-# API 키 누락 방어막
 if not GPT_API_KEY:
     raise ValueError("❌ GPT_API_KEY가 없습니다. .env 파일을 확인해 주세요.")
 
 client = OpenAI(api_key=GPT_API_KEY)
 
-# ==========================================
-# 2. 연령대별 특성 가이드 사전 (Prompt 주입용)
-# ==========================================
+
 AGE_TRAITS = {
     "고등학생": "학업 스트레스, 진로에 대한 고민, 친구 관계, 풋풋한 일상",
     "20대 초반": "대학 생활, 아르바이트, 새로운 만남, 진로 탐색, 자유로움",
@@ -40,9 +31,6 @@ AGE_TRAITS = {
     "30대 중반 이상": "삶의 안정과 번아웃, 가족/육아, 건강, 인생의 방향성 재점검"
 }
 
-# ==========================================
-# 3. 연령대 분류 함수 (Rule-based)
-# ==========================================
 def categorize_age(age):
     """나이를 입력받아 5가지 그룹으로 분류합니다."""
     if age <= 19:
@@ -56,17 +44,14 @@ def categorize_age(age):
     else:
         return "30대 중반 이상"
 
-# ==========================================
-# 4. 메인 파이프라인 실행 함수
-# ==========================================
 def run_daily_ai_analysis():
     print("🚀 일일 AI 맞춤형 분석 및 멘트 매핑 작업을 시작합니다...")
     
-    # [STEP 1] 백엔드에서 오늘 쌓인 일기 데이터 받아오기
+    
     try:
         response = requests.get(BACKEND_GET_DIARIES_URL)
         response.raise_for_status()
-        # 백엔드 형식에 맞춰 "data" 껍데기를 벗기고 알맹이 배열만 가져옵니다.
+        
         diaries_data = response.json().get("data", [])
     except Exception as e:
         print(f"❌ 데이터 수신 실패: {e}")
@@ -76,58 +61,58 @@ def run_daily_ai_analysis():
         print("📭 오늘 분석할 일기 데이터가 없습니다.")
         return
 
-    # [STEP 2] 딕셔너리 반복문으로 안전하게 전처리 및 그룹화
+    
     grouped_data = {} 
     
     for diary in diaries_data:
-        # 1. 비공개 일기 제외 (카멜케이스 isPublic 반영)
+        
         if diary.get('isPublic') == False:
             continue
             
-        # 2. 나이 정보 안전하게 가져오기
+        
         age = diary.get('age')
         
-        # 나이 데이터가 누락되었을 경우 패스
+        
         if age is None:
             diary_id = diary.get('id', '알수없음')
             print(f"⚠️ 경고: 일기 ID {diary_id}에 'age' 데이터가 없어 분석에서 제외합니다.")
             continue 
             
-        # 나이를 바탕으로 연령 그룹 이름 찾기
+        
         age_group = categorize_age(age)
         
-        # 3. 연령대별 그룹에 담기
+        
         if age_group not in grouped_data:
             grouped_data[age_group] = []
             
         grouped_data[age_group].append(diary)
 
-    # 최종적으로 백엔드에 한 번에 보낼 리스트 준비
+    
     final_payload = []
 
-    # [STEP 3] 연령대별로 그룹을 순회하며 AI 분석 진행
+    
     for age_group, diaries_list in grouped_data.items():
         print(f"🧠 [{age_group}] 감정 분류 및 맞춤형 멘트 생성 중...")
         
-        # ✨ [핵심 수정 1] 에러가 나더라도 무시되지 않도록, 반복문 맨 위에서 무조건 15초 대기!
+        
         print("⏳ OpenAI API 속도 제한 방지를 위해 15초 대기 중...")
         time.sleep(15)
         
-        # ✨ [핵심 수정 2] 너무 많은 데이터를 한 번에 보내면 에러가 나므로, 각 연령대별 최대 5개까지만 잘라서 보냄
+        
         diaries_for_prompt = [
             {"id": d.get("id"), "content": d.get("content")} 
             for d in diaries_list 
             if d.get("id") is not None and d.get("content") is not None
         ][:5] 
         
-        # 만약 일기가 없다면 패스
+        
         if not diaries_for_prompt:
             continue
             
-        # 현재 연령대에 딱 맞는 특성 키워드 가져오기
+        
         current_group_traits = AGE_TRAITS.get(age_group, "다양한 일상과 고민")
         
-        # 프롬프트 작성
+        
         prompt = f"""
         당신은 따뜻하고 공감 능력이 뛰어난 다이어리 앱의 AI 멘토입니다.
         아래는 '{age_group}' 사용자들이 작성한 일기(ID와 내용) 모음입니다.
@@ -150,7 +135,7 @@ def run_daily_ai_analysis():
         """
 
         try:
-            # GPT 모델 호출 (Structured Outputs로 JSON 스키마 강제)
+            
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
@@ -184,20 +169,20 @@ def run_daily_ai_analysis():
                 }
             )
 
-            # AI 결과 해석하기
+            
             ai_result = json.loads(response.choices[0].message.content)
             pos_comment = ai_result["positive_comment"]
             neg_comment = ai_result["negative_comment"]
             
-            # [STEP 4] AI가 분류한 일기별 감정에 따라, 멘트를 1:1로 매칭
+            
             for item in ai_result["classifications"]:
                 diary_id = item["id"]
                 sentiment = item["sentiment"]
                 
-                # 감정이 긍정이면 응원 멘트, 부정이면 위로 멘트 매칭
+                
                 matched_comment = pos_comment if sentiment == "positive" else neg_comment
                 
-                # 최종 데이터 딕셔너리 구성 (카멜케이스 aiComment 반영)
+                
                 final_payload.append({
                     "id": diary_id, 
                     "aiComment": matched_comment
@@ -207,7 +192,7 @@ def run_daily_ai_analysis():
             print(f"❌ [{age_group}] AI 분석 중 오류 발생: {e}")
             continue
 
-    # [STEP 5] 일기별로 개별 엔드포인트({diaryId} 치환)에 AI 추천 멘트 전송
+    
     success_count = 0
     for item in final_payload:
         diary_id = item["id"]
@@ -222,20 +207,15 @@ def run_daily_ai_analysis():
     if final_payload:
         print(f"✅ 총 {success_count}/{len(final_payload)}개의 일기에 맞춤형 AI 추천 멘트 매핑 완료 및 백엔드 전송 성공!")
 
-# ==========================================
-# 5. API 라우터 설정
-# ==========================================
-# 기존의 app = FastAPI() 대신 router를 생성합니다.
-# prefix를 설정하면 이 파일의 모든 API 주소 앞에 자동으로 /alarm이 붙습니다.
+
 router = APIRouter(prefix="/alarm", tags=["Alarm"])
 
-# Render가 서버가 살아있는지 확인하기 위한 기본 주소 (Health Check)
-@router.get("/")  # 기존 @app.get("/") 에서 변경
+
+@router.get("/")
 def health_check():
     return {"message": "AI Server is running perfectly!"}
 
-# 백엔드에서 특정 주소로 요청을 보내면 AI 분석 코드가 실행되도록 연결
-@router.get("/run-ai")  # 기존 @app.get("/run-ai") 에서 변경
+@router.get("/run-ai")
 def trigger_ai_analysis():
     run_daily_ai_analysis()
     return {"message": "AI analysis triggered and completed."}
