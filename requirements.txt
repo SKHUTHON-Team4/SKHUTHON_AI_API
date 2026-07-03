@@ -1,3 +1,6 @@
 -r alarm_ment/requirements.txt
 -r recommender/requirements.txt
--r title_ment/requirements.txt-r alarm_personalize/requirements.txt
+-r title_ment/requirements.txt
+-r alarm_personalize/requirements.txt
+
+//수정
