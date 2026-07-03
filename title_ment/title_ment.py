@@ -11,7 +11,7 @@ import time
 import logging
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from openai import OpenAI
 
@@ -32,7 +32,9 @@ client = OpenAI(
     max_retries=0,     # 재시도하면 5초 초과하므로 즉시 폴백
 )
 
-app = FastAPI(title="청춘잇다 Mood Message API")
+# 기존의 app = FastAPI() 대신 router를 생성합니다.
+# prefix를 설정하면 이 파일의 모든 API 주소 앞에 자동으로 /title이 붙습니다.
+router = APIRouter(prefix="/title", tags=["Title"])
 
 # ─────────────────────────────
 # 연령층별 프롬프트 가이드
@@ -184,12 +186,12 @@ def get_fallback(emotion: int) -> str:
 # ─────────────────────────────
 # 엔드포인트
 # ─────────────────────────────
-@app.get("/")
+@router.get("/")
 def health():
     return {"status": "ok", "service": "mood-message-api"}
 
 
-@app.post("/generate-mood-message", response_model=MoodResponse)
+@router.post("/generate-mood-message", response_model=MoodResponse)
 def generate_mood_message(req: MoodRequest):
     cache_key = f"{req.ageGroup}:{req.representativeEmotion}"
 

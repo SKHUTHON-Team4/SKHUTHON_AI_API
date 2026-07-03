@@ -1,11 +1,13 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import numpy as np
 from kiwipiepy import Kiwi
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-app = FastAPI(title="청춘일기장 추천 서비스")
+# 기존의 app = FastAPI() 대신 router를 생성합니다.
+# prefix를 설정하면 이 파일의 모든 API 주소 앞에 자동으로 /recommender가 붙습니다.
+router = APIRouter(prefix="/recommender", tags=["Recommender"])
 
 
 class DiaryRecommender:
@@ -117,19 +119,19 @@ class DiaryIn(BaseModel):
     def text(self) -> str:
         return f"{self.title} {self.content}".strip()
 
-@app.post("/diaries")
+@router.post("/diaries")
 def upsert_diary(d: DiaryIn):
     engine.upsert(d.id, d.memberId, d.text)
     return {"status": "indexed", "diary_id": d.id}
 
 
-@app.delete("/diaries/{diary_id}")
+@router.delete("/diaries/{diary_id}")
 def delete_diary(diary_id: int):
     engine.delete(diary_id)
     return {"status": "deleted", "diary_id": diary_id}
 
 
-@app.post("/reindex")
+@router.post("/reindex")
 def reindex(items: list[DiaryIn]):
     mapped = [{"diary_id": d.id, "user_id": d.memberId, "text": d.text}
               for d in items]
@@ -137,7 +139,7 @@ def reindex(items: list[DiaryIn]):
     return {"status": "reindexed", "count": len(items)}
 
 
-@app.get("/diaries/{diary_id}/similar")
+@router.get("/diaries/{diary_id}/similar")
 def similar(diary_id: int, top_k: int = 5):
     try:
         return {"diary_id": diary_id, "results": engine.similar_diaries(diary_id, top_k)}
@@ -145,7 +147,7 @@ def similar(diary_id: int, top_k: int = 5):
         raise HTTPException(404, "색인에 없는 일기입니다 (먼저 POST /diaries 필요)")
 
 
-@app.get("/users/{user_id}/recommend")
+@router.get("/users/{user_id}/recommend")
 def recommend(user_id: int, top_k: int = 5):
     try:
         return {"user_id": user_id, "results": engine.recommend_for_user(user_id, top_k)}
@@ -158,7 +160,7 @@ class RecommendRequest(BaseModel):
     top_k: int = 5
 
 
-@app.post("/recommend")
+@router.post("/recommend")
 def recommend_by_recent(req: RecommendRequest):
     if not req.diaries:
         raise HTTPException(400, "기준 일기(diaries)가 비어있습니다")

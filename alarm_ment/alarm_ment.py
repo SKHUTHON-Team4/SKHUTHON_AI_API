@@ -5,7 +5,7 @@ import time
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
-from fastapi import FastAPI
+from fastapi import APIRouter
 
 # Windows 콘솔의 기본 인코딩(cp949)이 이모지를 처리하지 못해 print()가 UnicodeEncodeError로 죽는 것을 방지
 sys.stdout.reconfigure(encoding="utf-8")
@@ -221,6 +221,24 @@ def run_daily_ai_analysis():
 
     if final_payload:
         print(f"✅ 총 {success_count}/{len(final_payload)}개의 일기에 맞춤형 AI 추천 멘트 매핑 완료 및 백엔드 전송 성공!")
+
+# ==========================================
+# 5. API 라우터 설정
+# ==========================================
+# 기존의 app = FastAPI() 대신 router를 생성합니다.
+# prefix를 설정하면 이 파일의 모든 API 주소 앞에 자동으로 /alarm이 붙습니다.
+router = APIRouter(prefix="/alarm", tags=["Alarm"])
+
+# Render가 서버가 살아있는지 확인하기 위한 기본 주소 (Health Check)
+@router.get("/")  # 기존 @app.get("/") 에서 변경
+def health_check():
+    return {"message": "AI Server is running perfectly!"}
+
+# 백엔드에서 특정 주소로 요청을 보내면 AI 분석 코드가 실행되도록 연결
+@router.get("/run-ai")  # 기존 @app.get("/run-ai") 에서 변경
+def trigger_ai_analysis():
+    run_daily_ai_analysis()
+    return {"message": "AI analysis triggered and completed."}
 
 # ==========================================
 # 5. FastAPI 웹 서버 세팅
